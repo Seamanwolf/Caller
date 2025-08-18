@@ -1556,7 +1556,28 @@ def get_period_dates(period, context):
                 end_date = datetime(year, end_month + 1, 1, 23, 59, 59) - timedelta(seconds=1)
                 
             return start_date.strftime("%Y%m%d"), end_date.strftime("%Y%m%d")
-        
+    
+    elif period.startswith("month_"):
+        # Месячные периоды: month_2024_01, month_2024_02, etc.
+        parts = period.split("_")
+        if len(parts) == 3:
+            year = int(parts[1])
+            month = int(parts[2])
+            
+            if month < 1 or month > 12:
+                raise ValueError(f"Неверный месяц: {month}")
+            
+            # Начало месяца
+            start_date = datetime(year, month, 1, 0, 0, 0)
+            
+            # Конец месяца
+            if month == 12:
+                end_date = datetime(year + 1, 1, 1, 23, 59, 59) - timedelta(seconds=1)
+            else:
+                end_date = datetime(year, month + 1, 1, 23, 59, 59) - timedelta(seconds=1)
+                
+            return start_date.strftime("%Y%m%d"), end_date.strftime("%Y%m%d")
+    
     else:
         raise ValueError(f"Неизвестный период: {period}")
 
@@ -2374,19 +2395,186 @@ async def generate_quarter_report(query, context, year, quarter):
         report_type = context.user_data.get("report_type")
         sheet_type = context.user_data.get("sheet_type", "")
         dept_number = context.user_data.get("dept_number", "all")
+        sheets_type = context.user_data.get("sheets_type", "1sheet")  # Получаем тип листов
         
         # Создаем период для квартала
         period = f"quarter_{year}_{quarter}"
         
-        logger.info(f"Генерация квартального отчета: год={year}, квартал={quarter}, отдел={dept_number}, лист={sheet_type}")
+        logger.info(f"Генерация квартального отчета: год={year}, квартал={quarter}, отдел={dept_number}, лист={sheet_type}, тип листов={sheets_type}")
         
-        # Используем handle_report_format для создания отчета по сотрудникам
-        await handle_report_format(query, context, sheet_type, dept_number, period, "excel")
+        if sheets_type == "3sheets":
+            # Создаем отчет с 3 листами (по месяцам)
+            await create_quarter_report_3sheets(query, context, year, quarter, sheet_type, dept_number, period)
+        else:
+            # Создаем отчет с 1 листом (весь квартал)
+            await handle_report_format(query, context, sheet_type, dept_number, period, "excel")
             
     except Exception as e:
         logger.error(f"Ошибка при генерации квартального отчета: {str(e)}")
         await query.edit_message_text(
             f"❌ Ошибка при генерации отчета: {str(e)}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]])
+        )
+
+async def create_quarter_report_3sheets(query, context, year, quarter, sheet_type, dept_number, period):
+    """Создать квартальный отчет с 3 листами (по месяцам)"""
+    try:
+        # Определяем месяцы квартала
+        quarter_months = {
+            1: [("Январь", 1), ("Февраль", 2), ("Март", 3)],
+            2: [("Апрель", 4), ("Май", 5), ("Июнь", 6)],
+            3: [("Июль", 7), ("Август", 8), ("Сентябрь", 9)],
+            4: [("Октябрь", 10), ("Ноябрь", 11), ("Декабрь", 12)]
+        }
+        
+        months = quarter_months[quarter]
+        
+        await query.edit_message_text("🔄 Создаю отчет с 3 листами по месяцам...", reply_markup=None)
+        
+        # Создаем Excel файл с 3 листами
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, Alignment, PatternFill
+        
+        wb = Workbook()
+        
+        # Удаляем дефолтный лист
+        wb.remove(wb.active)
+        
+        # Получаем сотрудников
+        employees = employee_provider.get_employees()
+        if not employees:
+            await query.edit_message_text("❌ Не удалось получить данные сотрудников", 
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]])
+            )
+            return
+        
+        # Фильтруем сотрудников по отделу, если выбран конкретный отдел
+        if dept_number != "all":
+            filtered_employees = []
+            for employee in employees:
+                emp_dept = get_department_numbers(employee['department'])
+                if emp_dept == dept_number:
+                    filtered_employees.append(employee)
+            employees = filtered_employees
+        
+        # Создаем листы для каждого месяца
+        for month_name, month_num in months:
+            ws = wb.create_sheet(title=month_name)
+            
+            # Заголовки
+            headers = ['Сотрудник', 'Отдел', 'Входящие 📞', 'Исходящие 📤', 'Пропущенные ❌', 'Всего звонков']
+            for col, header in enumerate(headers, 1):
+                cell = ws.cell(row=1, column=col, value=header)
+                cell.font = Font(bold=True)
+                cell.alignment = Alignment(horizontal='center')
+                cell.fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
+            
+            # Создаем период для месяца
+            month_period = f"month_{year}_{month_num:02d}"
+            
+            # Получаем данные за месяц
+            try:
+                start_date_str, end_date_str = get_period_dates(month_period, context)
+                logger.info(f"Получаем данные за {month_name} {year}: {start_date_str} - {end_date_str}")
+                
+                # Собираем статистику по сотрудникам
+                row = 2
+                total_incoming = 0
+                total_outgoing = 0
+                total_missed = 0
+                
+                for employee in employees:
+                    if not employee.get('sim') or employee['sim'] == 'Нет данных':
+                        continue
+                        
+                    # Получаем данные звонков за месяц
+                    data = fetch_call_history(start_date_str, end_date_str, employee['sim'])
+                    if not data:
+                        continue
+                    
+                    # Подсчитываем статистику
+                    df = pd.DataFrame(data)
+                    if not df.empty:
+                        incoming_types = ['in', 'incoming', 'received', 'inbound', 'входящий']
+                        outgoing_types = ['out', 'outgoing', 'исходящий']
+                        missed_statuses = ['noanswer', 'missed', 'пропущен', 'неотвечен', 'нет ответа']
+
+                        incoming_count = df[df['type'].str.lower().isin(incoming_types)].shape[0]
+                        outgoing_count = df[df['type'].str.lower().isin(outgoing_types)].shape[0]
+                        missed_count = df[df['status'].str.lower().isin(missed_statuses)].shape[0] if 'status' in df.columns else 0
+                        total_calls = len(data)
+                        
+                        # Добавляем данные в лист
+                        ws.cell(row=row, column=1, value=f"{employee['last_name']} {employee['first_name']}")
+                        ws.cell(row=row, column=2, value=get_department_numbers(employee['department']))
+                        ws.cell(row=row, column=3, value=incoming_count)
+                        ws.cell(row=row, column=4, value=outgoing_count)
+                        ws.cell(row=row, column=5, value=missed_count)
+                        ws.cell(row=row, column=6, value=total_calls)
+                        
+                        total_incoming += incoming_count
+                        total_outgoing += outgoing_count
+                        total_missed += missed_count
+                        row += 1
+                
+                # Добавляем итоговую строку
+                if row > 2:  # Если есть данные
+                    ws.cell(row=row, column=1, value=f"ИТОГО {dept_number if dept_number != 'all' else 'ВСЕГО'}")
+                    ws.cell(row=row, column=2, value="")
+                    ws.cell(row=row, column=3, value=total_incoming)
+                    ws.cell(row=row, column=4, value=total_outgoing)
+                    ws.cell(row=row, column=5, value=total_missed)
+                    ws.cell(row=row, column=6, value=total_incoming + total_outgoing + total_missed)
+                    
+                    # Стили для итоговой строки
+                    for col in range(1, 7):
+                        cell = ws.cell(row=row, column=col)
+                        cell.font = Font(bold=True)
+                        cell.fill = PatternFill(start_color="E6E6E6", end_color="E6E6E6", fill_type="solid")
+                
+            except Exception as e:
+                logger.error(f"Ошибка при получении данных за {month_name}: {str(e)}")
+                ws.cell(row=2, column=1, value=f"Ошибка получения данных: {str(e)}")
+            
+            # Автоподбор ширины столбцов
+            for column in ws.columns:
+                max_length = 0
+                column_letter = column[0].column_letter
+                for cell in column:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                adjusted_width = min(max_length + 2, 50)
+                ws.column_dimensions[column_letter].width = adjusted_width
+        
+        # Сохраняем файл
+        filename = f"quarter_report_{year}_Q{quarter}_3sheets_{dept_number if dept_number != 'all' else 'all'}.xlsx"
+        filepath = f"/tmp/{filename}"
+        wb.save(filepath)
+        
+        # Отправляем файл
+        with open(filepath, 'rb') as file:
+            await context.bot.send_document(
+                chat_id=query.message.chat_id,
+                document=file,
+                filename=filename,
+                caption=f"📊 Квартальный отчет {year} Q{quarter} (3 листа по месяцам)"
+            )
+        
+        # Удаляем временный файл
+        os.remove(filepath)
+        
+        await query.edit_message_text(
+            f"✅ Квартальный отчет {year} Q{quarter} с 3 листами отправлен!",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]])
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка при создании отчета с 3 листами: {str(e)}")
+        await query.edit_message_text(
+            f"❌ Ошибка при создании отчета: {str(e)}",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]])
         )
 
