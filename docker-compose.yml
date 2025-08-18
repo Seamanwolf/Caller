@@ -1,0 +1,9 @@
+version: '3.8'
+
+services:
+  broker-bot-old:
+    build: .
+    container_name: broker-bot-old
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1
