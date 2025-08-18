@@ -662,7 +662,8 @@ async def handle_report_format(query, context, sheet_type, dept_number, period, 
     logger.info(f"Окончательный номер отдела для использования: {dept_number}")
     
     try:
-        await query.edit_message_text("🔄 Получаю данные из Google Sheets...", reply_markup=None)
+        # Запускаем анимацию прогресса
+        loading_task = asyncio.create_task(show_loading_animation(query, context, "🔄 Получаю данные из Google Sheets"))
         
         # Получаем сотрудников из кэша
         employees = employee_provider.get_employees()
@@ -920,10 +921,25 @@ async def handle_report_format(query, context, sheet_type, dept_number, period, 
             await handle_plot_format(query, context, df_stats, sheet_name)
             await handle_excel_format(query, context, df_stats, sheet_name, actual_period)
             period_info = get_period_dates_info(actual_period, context)
+            
+            # Отменяем анимацию прогресса
+            loading_task.cancel()
+            try:
+                await loading_task
+            except asyncio.CancelledError:
+                pass
+            
             await query.edit_message_text(f"✅ Все форматы отчета отправлены! ({period_info})", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]])
         )
         
     except Exception as e:
+        # Отменяем анимацию прогресса в случае ошибки
+        try:
+            loading_task.cancel()
+            await loading_task
+        except (asyncio.CancelledError, UnboundLocalError):
+            pass
+        
         logger.error(f"Ошибка при обработке отчета: {str(e)}")
         await query.edit_message_text(f"❌ Произошла ошибка: {str(e)}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]])
         )
@@ -1860,7 +1876,8 @@ async def handle_incoming_numbers_excel(query, context, sheet_type, dept_number,
         # Имя листа для отображения и имени файла
         sheet_name = "Вторичка" if sheet_type == "vtorichka" else "Загородка"
 
-        await query.edit_message_text("🔄 Получаю данные из Google Sheets...", reply_markup=None)
+        # Запускаем анимацию прогресса
+        loading_task = asyncio.create_task(show_loading_animation(query, context, "🔄 Получаю данные из Google Sheets"))
         
         # Получаем сотрудников из кэша
         employees = employee_provider.get_employees()
@@ -2222,6 +2239,13 @@ async def handle_incoming_numbers_excel(query, context, sheet_type, dept_number,
         # Формируем имя файла без спецсимволов
         filename = f"calls_{sheet_name.lower()}_{period_info.replace(':', '').replace(' ', '_').replace('/', '_')}.xlsx"
         
+        # Отменяем анимацию прогресса
+        loading_task.cancel()
+        try:
+            await loading_task
+        except asyncio.CancelledError:
+            pass
+        
         await query.edit_message_text("🔄 Отправка Excel-файла...", reply_markup=None)
         await context.bot.send_document(chat_id=query.message.chat_id, document=buffer, filename=filename)
         await query.edit_message_text(f"✅ Excel-файл с входящими и пропущенными звонками отправлен ({period_info})!", 
@@ -2229,6 +2253,13 @@ async def handle_incoming_numbers_excel(query, context, sheet_type, dept_number,
         )
         
     except Exception as e:
+        # Отменяем анимацию прогресса в случае ошибки
+        try:
+            loading_task.cancel()
+            await loading_task
+        except (asyncio.CancelledError, UnboundLocalError):
+            pass
+        
         logger.error(f"Ошибка при выгрузке звонков: {str(e)}")
         await query.edit_message_text(f"❌ Произошла ошибка: {str(e)}", 
                                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]])
@@ -2433,7 +2464,8 @@ async def create_quarter_report_3sheets(query, context, year, quarter, sheet_typ
         
         months = quarter_months[quarter]
         
-        await query.edit_message_text("🔄 Создаю отчет с 3 листами по месяцам...", reply_markup=None)
+        # Запускаем анимацию прогресса
+        loading_task = asyncio.create_task(show_loading_animation(query, context, "🔄 Создаю отчет с 3 листами по месяцам"))
         
         # Создаем Excel файл с 3 листами
         from openpyxl import Workbook
@@ -2570,12 +2602,26 @@ async def create_quarter_report_3sheets(query, context, year, quarter, sheet_typ
         # Удаляем временный файл
         os.remove(filepath)
         
+        # Отменяем анимацию прогресса
+        loading_task.cancel()
+        try:
+            await loading_task
+        except asyncio.CancelledError:
+            pass
+        
         await query.edit_message_text(
             f"✅ Квартальный отчет {year} Q{quarter} с 3 листами отправлен!",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]])
         )
         
     except Exception as e:
+        # Отменяем анимацию прогресса в случае ошибки
+        try:
+            loading_task.cancel()
+            await loading_task
+        except (asyncio.CancelledError, UnboundLocalError):
+            pass
+        
         logger.error(f"Ошибка при создании отчета с 3 листами: {str(e)}")
         await query.edit_message_text(
             f"❌ Ошибка при создании отчета: {str(e)}",
