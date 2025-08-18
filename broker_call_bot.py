@@ -162,6 +162,7 @@ async def button_callback(update, context):
             await show_department_list(query, context, context.user_data.get("sheet_type", ""), "by")
             return
         context.user_data["report_type"] = "quarter_3sheets"
+        context.user_data["sheets_type"] = "3sheets"  # Устанавливаем тип листов
         await show_year_selection(query, context)
         return
     if data == "quarter:1sheet":
@@ -170,6 +171,7 @@ async def button_callback(update, context):
             await show_department_list(query, context, context.user_data.get("sheet_type", ""), "by")
             return
         context.user_data["report_type"] = "quarter_1sheet"
+        context.user_data["sheets_type"] = "1sheet"  # Устанавливаем тип листов
         await show_year_selection(query, context)
         return
     if data.startswith("dept:"):
@@ -309,10 +311,12 @@ async def button_callback(update, context):
             sheets_key = quarter_data[1]
             if sheets_key == "3sheets":
                 context.user_data["report_type"] = "quarter_3sheets"
+                context.user_data["sheets_type"] = "3sheets"  # Устанавливаем тип листов
                 # dept_number не трогаем
                 await show_year_selection(query, context)
             elif sheets_key == "1sheet":
                 context.user_data["report_type"] = "quarter_1sheet"
+                context.user_data["sheets_type"] = "1sheet"  # Устанавливаем тип листов
                 await show_year_selection(query, context)
             return
         
