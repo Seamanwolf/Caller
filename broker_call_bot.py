@@ -434,13 +434,21 @@ async def show_period_selection(query, context, sheet_type, report_type):
 # Добавляю функцию анимированного прогресса
 async def show_loading_animation(query, context, base_text="Получаю данные сотрудников"):
     animation = ["", ".", "..", "...", " ....", " .....", " ......"]
+    logger.info(f"Запуск анимации прогресса: {base_text}")
     try:
-        for i in range(60):  # максимум 30 секунд
+        # Сначала показываем начальное сообщение
+        await query.edit_message_text(f"{base_text}{animation[0]}")
+        logger.info(f"Показано начальное сообщение прогресса: {base_text}")
+        
+        for i in range(1, 60):  # максимум 30 секунд
             await asyncio.sleep(0.5)
             await query.edit_message_text(f"{base_text}{animation[i % len(animation)]}")
+            logger.info(f"Обновлен прогресс: {base_text}{animation[i % len(animation)]}")
     except asyncio.CancelledError:
+        logger.info("Анимация прогресса отменена")
         pass
-    except Exception:
+    except Exception as e:
+        logger.error(f"Ошибка в анимации прогресса: {str(e)}")
         pass
 
 async def show_department_list(query, context, sheet_type, report_type):
@@ -2426,6 +2434,7 @@ async def show_quarter_selection(query, context, year):
 
 async def generate_quarter_report(query, context, year, quarter):
     """Генерировать квартальный отчет с реальными данными"""
+    logger.info(f"=== НАЧАЛО generate_quarter_report: год={year}, квартал={quarter} ===")
     try:
         report_type = context.user_data.get("report_type")
         sheet_type = context.user_data.get("sheet_type", "")
@@ -2437,8 +2446,10 @@ async def generate_quarter_report(query, context, year, quarter):
         
         logger.info(f"Генерация квартального отчета: год={year}, квартал={quarter}, отдел={dept_number}, лист={sheet_type}, тип листов={sheets_type}")
         
-        # Запускаем анимацию прогресса для квартального отчета
-        loading_task = asyncio.create_task(show_loading_animation(query, context, "🔄 Формирую квартальный отчет"))
+        # Показываем сообщение о прогрессе
+        logger.info("Показываем сообщение о прогрессе для квартального отчета")
+        await query.edit_message_text("🔄 Формирую квартальный отчет...", reply_markup=None)
+        logger.info("Сообщение о прогрессе показано")
         
         if sheets_type == "3sheets":
             # Создаем отчет с 3 листами (по месяцам)
@@ -2447,22 +2458,8 @@ async def generate_quarter_report(query, context, year, quarter):
             # Создаем отчет с 1 листом (весь квартал)
             # Передаем параметр skip_loading=True, чтобы не запускать дублирующий прогресс-бар
             await handle_report_format_quarter(query, context, sheet_type, dept_number, period, "excel")
-        
-        # Отменяем анимацию прогресса
-        loading_task.cancel()
-        try:
-            await loading_task
-        except asyncio.CancelledError:
-            pass
             
     except Exception as e:
-        # Отменяем анимацию прогресса в случае ошибки
-        try:
-            loading_task.cancel()
-            await loading_task
-        except (asyncio.CancelledError, UnboundLocalError):
-            pass
-        
         logger.error(f"Ошибка при генерации квартального отчета: {str(e)}")
         await query.edit_message_text(
             f"❌ Ошибка при генерации отчета: {str(e)}",
