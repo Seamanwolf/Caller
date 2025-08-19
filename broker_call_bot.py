@@ -2437,18 +2437,209 @@ async def generate_quarter_report(query, context, year, quarter):
         
         logger.info(f"Генерация квартального отчета: год={year}, квартал={quarter}, отдел={dept_number}, лист={sheet_type}, тип листов={sheets_type}")
         
+        # Запускаем анимацию прогресса для квартального отчета
+        loading_task = asyncio.create_task(show_loading_animation(query, context, "🔄 Формирую квартальный отчет"))
+        
         if sheets_type == "3sheets":
             # Создаем отчет с 3 листами (по месяцам)
             await create_quarter_report_3sheets(query, context, year, quarter, sheet_type, dept_number, period)
         else:
             # Создаем отчет с 1 листом (весь квартал)
-            await handle_report_format(query, context, sheet_type, dept_number, period, "excel")
+            # Передаем параметр skip_loading=True, чтобы не запускать дублирующий прогресс-бар
+            await handle_report_format_quarter(query, context, sheet_type, dept_number, period, "excel")
+        
+        # Отменяем анимацию прогресса
+        loading_task.cancel()
+        try:
+            await loading_task
+        except asyncio.CancelledError:
+            pass
             
     except Exception as e:
+        # Отменяем анимацию прогресса в случае ошибки
+        try:
+            loading_task.cancel()
+            await loading_task
+        except (asyncio.CancelledError, UnboundLocalError):
+            pass
+        
         logger.error(f"Ошибка при генерации квартального отчета: {str(e)}")
         await query.edit_message_text(
             f"❌ Ошибка при генерации отчета: {str(e)}",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]])
+        )
+
+async def handle_report_format_quarter(query, context, sheet_type, dept_number, period, format_type):
+    """Версия handle_report_format для квартальных отчетов без прогресс-бара"""
+    sheet_name = 'Все отделы'
+    logger.info(f"Обработка квартального отчета: тип={sheet_type}, отдел={dept_number}, период={period}, формат={format_type}")
+    
+    # Дополнительная проверка номера отдела из context.user_data
+    if dept_number == "None" or not dept_number or dept_number == "undefined":
+        if context.user_data.get("selected_dept_number"):
+            dept_number = context.user_data.get("selected_dept_number")
+            logger.info(f"Восстановлен номер отдела из context.user_data['selected_dept_number']: {dept_number}")
+        elif context.user_data.get("dept_number"):
+            dept_number = context.user_data.get("dept_number")
+            logger.info(f"Восстановлен номер отдела из context.user_data['dept_number']: {dept_number}")
+    
+    logger.info(f"Окончательный номер отдела для использования: {dept_number}")
+    
+    try:
+        # Получаем сотрудников из кэша
+        employees = employee_provider.get_employees()
+        filtered = employees
+        
+        if not filtered:
+            logger.error("Не найдено сотрудников для отчета")
+            await query.edit_message_text("❌ Нет данных для создания отчета", 
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]])
+            )
+            return
+
+        logger.info(f"Найдено {len(filtered)} сотрудников для отчета")
+
+        # Группируем сотрудников по отделам
+        departments = {}
+        import re
+        for employee in filtered:
+            dept_raw = employee['department']
+            match = re.search(r'(\d+)', str(dept_raw))
+            if match:
+                dept = str(int(match.group(1)))
+                if dept not in departments:
+                    departments[dept] = []
+                departments[dept].append({
+                    'phone': employee['sim'],
+                    'name': f"{employee['last_name']} {employee['first_name']}",
+                    'department': employee['department']
+                })
+
+        logger.info(f"Найдено {len(departments)} отделов: {list(departments.keys())}")
+        
+        if not departments:
+            logger.error("Не найдено отделов с номерами")
+            await query.edit_message_text("❌ Не найдено отделов с номерами", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]])
+            )
+            return
+
+        try:
+            actual_period = context.user_data.get("period", period)
+            logger.info(f"Используемый период: {actual_period}")
+            
+            # Получаем строки дат в формате YYYYMMDD
+            start_date_str, end_date_str = get_period_dates(actual_period, context)
+            logger.info(f"Получены даты периода: {start_date_str} - {end_date_str}")
+            
+            logger.info(f"Отправка запроса с датами: {start_date_str} - {end_date_str}")
+            
+        except ValueError as e:
+            logger.error(f"Ошибка при определении периода: {str(e)}")
+            await query.edit_message_text(f"❌ Ошибка при определении периода: {str(e)}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]])
+            )
+            return
+        
+        # Получаем тип отчета из context.user_data
+        report_type = context.user_data.get("report_type", "all")
+        logger.info(f"Тип отчета в handle_report_format_quarter: {report_type}")
+        
+        # Проверяем и нормализуем номер отдела
+        if not dept_number or dept_number == "None" or dept_number == "all" or dept_number == "undefined":
+            if report_type != "all":
+                logger.error(f"Не указан номер отдела для отчета типа {report_type}")
+                await query.edit_message_text("❌ Не указан номер отдела для отчета", 
+                                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]])
+                )
+                return
+            dept_number = "all"
+        
+        logger.info(f"Используемый номер отдела: {dept_number}")
+        
+        # Проверка существования отдела
+        if dept_number != "all" and dept_number not in departments:
+            logger.error(f"Отдел {dept_number} не найден среди доступных отделов: {list(departments.keys())}")
+            await query.edit_message_text(f"❌ Отдел {dept_number} не найден", 
+                                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]])
+            )
+            return
+
+        # Фильтруем сотрудников по отделу, если выбран конкретный отдел
+        if dept_number != "all":
+            filtered_employees = []
+            for employee in filtered:
+                emp_dept = get_department_numbers(employee['department'])
+                if emp_dept == dept_number:
+                    filtered_employees.append(employee)
+            filtered = filtered_employees
+            logger.info(f"Отфильтровано {len(filtered)} сотрудников для отдела {dept_number}")
+
+        # Собираем статистику по сотрудникам
+        all_stats = []
+        for employee in filtered:
+            if not employee.get('sim') or employee['sim'] == 'Нет данных':
+                continue
+                
+            # Получаем данные звонков
+            data = fetch_call_history(start_date_str, end_date_str, employee['sim'])
+            if not data:
+                continue
+            
+            # Подсчитываем статистику
+            df = pd.DataFrame(data)
+            if not df.empty:
+                incoming_types = ['in', 'incoming', 'received', 'inbound', 'входящий']
+                outgoing_types = ['out', 'outgoing', 'исходящий']
+                missed_statuses = ['noanswer', 'missed', 'пропущен', 'неотвечен', 'нет ответа']
+
+                incoming_count = df[df['type'].str.lower().isin(incoming_types)].shape[0]
+                outgoing_count = df[df['type'].str.lower().isin(outgoing_types)].shape[0]
+                missed_count = df[df['status'].str.lower().isin(missed_statuses)].shape[0] if 'status' in df.columns else 0
+                
+                stats_dict = {
+                    'Сотрудник': employee['name'],
+                    'Отдел': get_department_numbers(employee['department']),
+                    'Входящие 📞': incoming_count,
+                    'Исходящие 📤': outgoing_count,
+                    'Пропущенные ❌': missed_count,
+                    'Всего звонков': len(data)
+                }
+                all_stats.append(stats_dict)
+
+        if not all_stats:
+            logger.error("Нет данных для создания отчета")
+            await query.edit_message_text("❌ Нет данных для создания отчета", 
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]])
+            )
+            return
+
+        # Создаем DataFrame
+        df_stats = pd.DataFrame(all_stats)
+        
+        # Фильтруем данные, исключая все итоговые строки
+        df_stats = df_stats[~df_stats['Сотрудник'].str.contains('ИТОГО')]
+        
+        logger.info(f"Подготовлен DataFrame с {len(df_stats)} строками данных")
+        
+        # Обрабатываем формат отчета
+        if format_type == "all":
+            await handle_table_format(query, context, all_stats, sheet_name)
+            await handle_plot_format(query, context, df_stats, sheet_name)
+            await handle_excel_format(query, context, df_stats, sheet_name, actual_period)
+            period_info = get_period_dates_info(actual_period, context)
+            await query.edit_message_text(f"✅ Все форматы отчета отправлены! ({period_info})", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]])
+        )
+        elif format_type == "excel":
+            await handle_excel_format(query, context, df_stats, sheet_name, actual_period)
+        elif format_type == "plot":
+            await handle_plot_format(query, context, df_stats, sheet_name)
+        elif format_type == "table":
+            await handle_table_format(query, context, all_stats, sheet_name)
+        elif format_type == "incoming":
+            await handle_incoming_numbers_excel(query, context, sheet_type, dept_number, actual_period)
+        
+    except Exception as e:
+        logger.error(f"Ошибка при обработке квартального отчета: {str(e)}")
+        await query.edit_message_text(f"❌ Произошла ошибка: {str(e)}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]])
         )
 
 async def create_quarter_report_3sheets(query, context, year, quarter, sheet_type, dept_number, period):
@@ -2464,8 +2655,7 @@ async def create_quarter_report_3sheets(query, context, year, quarter, sheet_typ
         
         months = quarter_months[quarter]
         
-        # Запускаем анимацию прогресса
-        loading_task = asyncio.create_task(show_loading_animation(query, context, "🔄 Создаю отчет с 3 листами по месяцам"))
+        # Прогресс-бар уже запущен в generate_quarter_report
         
         # Создаем Excel файл с 3 листами
         from openpyxl import Workbook
@@ -2602,26 +2792,12 @@ async def create_quarter_report_3sheets(query, context, year, quarter, sheet_typ
         # Удаляем временный файл
         os.remove(filepath)
         
-        # Отменяем анимацию прогресса
-        loading_task.cancel()
-        try:
-            await loading_task
-        except asyncio.CancelledError:
-            pass
-        
         await query.edit_message_text(
             f"✅ Квартальный отчет {year} Q{quarter} с 3 листами отправлен!",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]])
         )
         
     except Exception as e:
-        # Отменяем анимацию прогресса в случае ошибки
-        try:
-            loading_task.cancel()
-            await loading_task
-        except (asyncio.CancelledError, UnboundLocalError):
-            pass
-        
         logger.error(f"Ошибка при создании отчета с 3 листами: {str(e)}")
         await query.edit_message_text(
             f"❌ Ошибка при создании отчета: {str(e)}",
