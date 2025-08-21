@@ -1,6 +1,8 @@
 import requests
 from datetime import datetime, timedelta
 import threading
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 class EmployeeDataProvider:
     def __init__(self, api_token, cache_ttl_minutes=10):
@@ -9,7 +11,21 @@ class EmployeeDataProvider:
         self._cache = []
         self._cache_time = None
         self._cache_ttl = timedelta(minutes=cache_ttl_minutes)
-        self._lock = threading.Lock()
+        # Заменяем Lock на RLock для избежания дедлока
+        self._lock = threading.RLock()
+
+        # Надёжные HTTP-клиент/таймауты/ретраи
+        self._session = requests.Session()
+        retries = Retry(
+            total=3,
+            backoff_factor=0.5,
+            status_forcelist=[502, 503, 504],
+            allowed_methods=["GET"]
+        )
+        adapter = HTTPAdapter(max_retries=retries)
+        self._session.mount("http://", adapter)
+        self._session.mount("https://", adapter)
+        self._timeout = (10, 30)  # (connect, read)
 
     def _fetch_employees(self):
         all_employees = []
@@ -25,7 +41,8 @@ class EmployeeDataProvider:
             }
             url = f"{self.base_url}/list"
             try:
-                response = requests.get(url, params=params)
+                # Используем сессию с таймаутами и ретраями
+                response = self._session.get(url, params=params, timeout=self._timeout)
                 if response.status_code != 200:
                     break
                 data = response.json()
@@ -93,15 +110,30 @@ class EmployeeDataProvider:
             now = datetime.now()
             if not force and self._cache_time and now - self._cache_time < self._cache_ttl:
                 return  # Кэш ещё актуален
-            employees = self._fetch_employees()
+        
+        # Выносим сетевой запрос из-под лока
+        employees = self._fetch_employees()
+        
+        with self._lock:
             self._cache = self._process_employees(employees)
             self._cache_time = now
 
     def get_employees(self):
+        now = datetime.now()
+        # Сначала проверяем, нужен ли рефреш
         with self._lock:
-            now = datetime.now()
-            if not self._cache or not self._cache_time or now - self._cache_time > self._cache_ttl:
-                self.update_cache(force=True)
+            needs_refresh = (
+                not self._cache or
+                not self._cache_time or
+                (now - self._cache_time > self._cache_ttl)
+            )
+
+        if needs_refresh:
+            # Обновляем кэш отдельно — update_cache сама возьмёт RLock
+            self.update_cache(force=True)
+
+        # Затем возвращаем копию кэша
+        with self._lock:
             employees = list(self._cache)
             import re
             print('DEBUG: Отделы в кэше:', set(e['department'] for e in employees))

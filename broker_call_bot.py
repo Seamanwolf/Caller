@@ -62,7 +62,7 @@ AUTO_REPORT_USER_ID = 194530
 bot_application = None
 
 # Инициализация провайдера сотрудников (глобально)
-EMPLOYEE_API_TOKEN = "a4d4a75094d8f9d8597085ac0ac12a51"
+EMPLOYEE_API_TOKEN = os.environ.get("EMPLOYEE_API_TOKEN", "a4d4a75094d8f9d8597085ac0ac12a51")
 employee_provider = EmployeeDataProvider(EMPLOYEE_API_TOKEN)
 
 def setup_logging():
@@ -117,7 +117,8 @@ async def button_callback(update, context):
     if data == "update_employees":
         await query.edit_message_text("🔄 Обновляю кэш сотрудников...")
         try:
-            employee_provider.update_cache(force=True)
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, employee_provider.update_cache, True)
             await query.edit_message_text("✅ Кэш сотрудников успешно обновлён!", reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⬅️ В меню", callback_data="back_to_main")]
             ]))
@@ -229,43 +230,76 @@ async def show_period_selection(query, context, sheet_type, report_type):
 async def show_department_list(query, context, sheet_type, report_type):
     logger.info(f"Показываю список отделов для sheet_type={sheet_type}, report_type={report_type}")
     
-    # Получаем сотрудников из кэша
-    employees = employee_provider.get_employees()
-    filtered = employees
-    
-    # Группируем по отделам
-    departments = {}
-    import re
-    for emp in filtered:
-        dept_raw = emp['department']
-        match = re.search(r'(\d+)', str(dept_raw))
-        if match:
-            dept = str(int(match.group(1)))
-            if dept not in departments:
-                departments[dept] = []
-            departments[dept].append({
-                'phone': emp['sim'],
-                'name': f"{emp['last_name']} {emp['first_name']}",
-                'department': emp['department']
-            })
-    
-    if not departments:
-        logger.error("Не найдено отделов с номерами")
-        await query.edit_message_text("❌ Не найдено отделов с номерами", 
+    try:
+        # Показываем сообщение о загрузке
+        await query.edit_message_text("🔄 Загружаю список отделов...", reply_markup=None)
+        
+        # Получаем сотрудников из кэша с таймаутом
+        try:
+            # Запускаем получение сотрудников в отдельном потоке с таймаутом
+            loop = asyncio.get_event_loop()
+            employees = await asyncio.wait_for(
+                loop.run_in_executor(None, employee_provider.get_employees),
+                timeout=10.0  # 10 секунд таймаут
+            )
+            filtered = employees
+            logger.info(f"Получено {len(filtered)} сотрудников")
+        except asyncio.TimeoutError:
+            logger.error("Таймаут при получении сотрудников")
+            await query.edit_message_text("❌ Таймаут при загрузке данных. Попробуйте позже.", 
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]])
+            )
+            return
+        except Exception as e:
+            logger.error(f"Ошибка при получении сотрудников: {str(e)}")
+            await query.edit_message_text(f"❌ Ошибка при загрузке данных: {str(e)}", 
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]])
+            )
+            return
+        
+        # Группируем по отделам
+        departments = {}
+        import re
+        for emp in filtered:
+            try:
+                dept_raw = emp['department']
+                match = re.search(r'(\d+)', str(dept_raw))
+                if match:
+                    dept = str(int(match.group(1)))
+                    if dept not in departments:
+                        departments[dept] = []
+                    departments[dept].append({
+                        'phone': emp['sim'],
+                        'name': f"{emp['last_name']} {emp['first_name']}",
+                        'department': emp['department']
+                    })
+            except Exception as e:
+                logger.error(f"Ошибка при обработке сотрудника {emp}: {str(e)}")
+                continue
+        
+        if not departments:
+            logger.error("Не найдено отделов с номерами")
+            await query.edit_message_text("❌ Не найдено отделов с номерами", 
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]])
+            )
+            return
+            
+        keyboard = []
+        for dept_number in sorted(departments.keys(), key=int):
+            callback_data = f"dept:{dept_number}"
+            keyboard.append([InlineKeyboardButton(f"Отдел {dept_number} ({len(departments[dept_number])} сотрудников)", callback_data=callback_data)])
+        keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")])
+        
+        await query.edit_message_text(
+            f"🏢 Выберите отдел для создания отчета:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        
+    except Exception as e:
+        logger.error(f"Критическая ошибка в show_department_list: {str(e)}")
+        await query.edit_message_text(f"❌ Произошла ошибка: {str(e)}", 
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]])
         )
-        return
-        
-    keyboard = []
-    for dept_number in sorted(departments.keys(), key=int):
-        callback_data = f"dept:{dept_number}"
-        keyboard.append([InlineKeyboardButton(f"Отдел {dept_number} ({len(departments[dept_number])} сотрудников)", callback_data=callback_data)])
-    keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")])
-    
-    await query.edit_message_text(
-        f"🏢 Выберите отдел для создания отчета:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
 
 async def show_format_selection(query, context, sheet_type, report_type, dept_number, period):
     logger.info(f"Показываю выбор формата для sheet_type={sheet_type}, report_type={report_type}, dept_number={dept_number}, period={period}")
@@ -1021,6 +1055,12 @@ async def create_quarter_report_3sheets(query, context, year, quarter, sheet_typ
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")]])
         )
 
+# Добавляем функцию error_handler
+async def error_handler(update, context):
+    logger.error(f"Exception while handling an update: {context.error}")
+    if update and update.effective_message:
+        await update.effective_message.reply_text("❌ Произошла ошибка при обработке запроса.")
+
 # Добавляю/перемещаю функцию update_employees_command выше main
 async def update_employees_command(update, context):
     user_id = update.effective_user.id
@@ -1029,7 +1069,8 @@ async def update_employees_command(update, context):
         return
     await update.message.reply_text("🔄 Обновляю кэш сотрудников...")
     try:
-        employee_provider.update_cache(force=True)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, employee_provider.update_cache, True)
         await update.message.reply_text("✅ Кэш сотрудников успешно обновлён!")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка обновления кэша: {e}")
@@ -1037,14 +1078,14 @@ async def update_employees_command(update, context):
 def main():
     global bot_application
     
-    application = Application.builder().token("8083344307:AAEwLJNPEoPRKxEUXJaXoHgqpTa6k3lA5_k").build()
+    bot_token = os.environ.get("BOT_TOKEN", "8083344307:AAEwLJNPEoPRKxEUXJaXoHgqpTa6k3lA5_k")
+    application = Application.builder().token(bot_token).build()
     bot_application = application
     
     # Добавляем обработчики
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("update_employees", update_employees_command))
     application.add_handler(CallbackQueryHandler(button_callback))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     application.add_error_handler(error_handler)
     
     async def on_startup(app):
@@ -1057,6 +1098,14 @@ def main():
             logger.error(f"❌ Не удалось обновить кэш сотрудников при старте: {e}")
     
     application.post_init = on_startup
+    
+    # Добавляем heartbeat для мониторинга (если доступен JobQueue)
+    if application.job_queue:
+        application.job_queue.run_repeating(
+            lambda context: logger.debug("heartbeat"), 
+            interval=120, 
+            first=120
+        )
     
     application.run_polling()
 

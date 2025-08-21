@@ -7,3 +7,5 @@ services:
     restart: unless-stopped
     environment:
       - PYTHONUNBUFFERED=1
+      - BOT_TOKEN=${BOT_TOKEN:-8083344307:AAEwLJNPEoPRKxEUXJaXoHgqpTa6k3lA5_k}
+      - EMPLOYEE_API_TOKEN=${EMPLOYEE_API_TOKEN:-a4d4a75094d8f9d8597085ac0ac12a51}
