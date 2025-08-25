@@ -1,0 +1,15 @@
+# Конфигурация API ВАТС
+API_KEY=d1b0ef65-e491-43f9-967b-df67d4657dbb
+API_URL=https://leto.megapbx.ru/crmapi/v1
+
+# Токен Telegram бота
+TELEGRAM_BOT_TOKEN=8083344307:AAEwLJNPEoPRKxEUXJaXoHgqpTa6k3lA5_k
+
+# Токен API сотрудников
+EMPLOYEE_API_TOKEN=a4d4a75094d8f9d8597085ac0ac12a51
+
+# Список разрешенных пользователей (через запятую)
+ALLOWED_USERS=194530,368752085,261337953,702018715
+
+# ID пользователя для автоматических отчетов
+AUTO_REPORT_USER_ID=194530

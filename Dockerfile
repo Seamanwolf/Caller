@@ -15,10 +15,12 @@ COPY employees_export.py .
 COPY export/ ./export/
 COPY employees.xlsx .
 
+# Создаем пользователя для безопасности
 RUN useradd -m -u 1000 botuser && chown -R botuser:botuser /app
 USER botuser
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 
+# Проверяем наличие переменных окружения
 CMD ["python", "broker_call_bot.py"]
